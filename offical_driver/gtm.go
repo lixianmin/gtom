@@ -16,7 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/x/network/connection"
+	//"go.mongodb.org/mongo-driver/x/network/connection"
 )
 
 var opCodes = [...]string{"c", "i", "u", "d"}
@@ -501,11 +501,12 @@ func unwrapErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	if ce, ok := err.(connection.Error); ok {
-		if ce.Wrapped != nil {
-			return unwrapErr(ce.Wrapped)
-		}
-	}
+	// go.mongodb.org/mongo-driver/x/network/connection 这个代码路径没有了
+	//if ce, ok := err.(connection.Error); ok {
+	//	if ce.Wrapped != nil {
+	//		return unwrapErr(ce.Wrapped)
+	//	}
+	//}
 	return err
 }
 

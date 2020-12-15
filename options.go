@@ -1,7 +1,7 @@
 package mop
 
 import (
-	"log"
+	"github.com/lixianmin/logo"
 	"time"
 )
 
@@ -28,6 +28,6 @@ type Options struct {
 	Unmarshal           DataUnmarshaller   //
 	Pipe                PipelineBuilder    // an optional function to build aggregation pipelines
 	PipeAllowDisk       bool               // true to allow MongoDB to use disk for aggregation pipeline options with large result sets
-	Log                 *log.Logger        // pass your own logger
+	Log                 logo.ILogger        // pass your own logger
 }
 

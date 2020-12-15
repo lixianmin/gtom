@@ -3,19 +3,17 @@ package mop
 import (
 	"context"
 	"fmt"
-	"log"
-	"net"
-	"os"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
+	"github.com/lixianmin/logo"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 var opCodes = [...]string{"c", "i", "u", "d"}
@@ -138,7 +136,7 @@ type OpCtx struct {
 	resumeC          chan bool
 	paused           bool
 	stopped          bool
-	log              *log.Logger
+	log              logo.ILogger
 }
 
 type OpCtxMulti struct {
@@ -155,7 +153,7 @@ type OpCtxMulti struct {
 	resumeC      chan bool
 	paused       bool
 	stopped      bool
-	log          *log.Logger
+	log          logo.ILogger
 }
 
 type ShardInfo struct {
@@ -473,7 +471,6 @@ func ChainOpFilters(filters ...OpFilter) OpFilter {
 	}
 }
 
-
 func (this *OpBuf) Append(op *Op) {
 	this.Entries = append(this.Entries, op)
 }
@@ -626,10 +623,10 @@ func (my *Op) processDoc(data interface{}, o *Options) {
 	if err == nil {
 		my.Doc, err = o.Unmarshal(my.Namespace, b)
 		if err != nil {
-			o.Log.Printf("Unable to process document: %s", err)
+			o.Log.Info("Unable to process document: %s", err)
 		}
 	} else {
-		o.Log.Printf("Unable to process document: %s", err)
+		o.Log.Info("Unable to process document: %s", err)
 	}
 	return
 }
@@ -949,7 +946,7 @@ func ConsumeChangeStream(ctx *OpCtx, client *mongo.Client, ns string, o *Options
 	defer ctx.allWg.Done()
 	n := &N{}
 	n.parseForChanges(ns)
-	ctx.log.Printf("Watching changes on %s", n.desc())
+	ctx.log.Info("Watching changes on %s", n.desc())
 	var pipeline []interface{}
 	var startAt *primitive.Timestamp
 	var resumeAfter interface{}
@@ -1276,7 +1273,7 @@ func DefaultOptions() *Options {
 		DirectReadConcur:    0,
 		DirectReadNoTimeout: false,
 		Unmarshal:           nil,
-		Log:                 log.New(os.Stdout, "INFO ", log.Flags()),
+		Log:                 logo.GetLogger(),
 	}
 }
 

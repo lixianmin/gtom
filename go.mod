@@ -1,4 +1,4 @@
-module github.com/lixianmin/gtom
+module github.com/lixianmin/mop
 
 go 1.13
 

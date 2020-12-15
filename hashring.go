@@ -273,10 +273,10 @@ func (h *HashRing) RemoveNode(node string) *HashRing {
 }
 
 func hashVal(bKey []byte) HashKey {
-	return ((HashKey(bKey[3]) << 24) |
+	return (HashKey(bKey[3]) << 24) |
 		(HashKey(bKey[2]) << 16) |
 		(HashKey(bKey[1]) << 8) |
-		(HashKey(bKey[0])))
+		(HashKey(bKey[0]))
 }
 
 func (h *HashRing) hashDigest(key string) []byte {

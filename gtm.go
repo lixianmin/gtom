@@ -73,43 +73,6 @@ const (
 	DirectQuerySource
 )
 
-type Options struct {
-	After               TimestampGenerator // if nil defaults to gtom.LastOpTimestamp; not yet supported for ChangeStreamNS
-	Filter              OpFilter           // op filter function that has access to type/ns/data
-	NamespaceFilter     OpFilter           // op filter function that has access to type/ns ONLY
-	OpLogDisabled       bool               // true to disable tailing the MongoDB oplog
-	OpLogDatabaseName   string             // defaults to "local"
-	OpLogCollectionName string             // defaults to "oplog.rs"
-	ChannelSize         int                // defaults to 20
-	BufferSize          int                // defaults to 50. used to batch fetch documents on bursts of activity
-	BufferDuration      time.Duration      // defaults to 750 ms. after this timeout the batch is force fetched
-	Ordering            OrderingGuarantee  // defaults to gtom.Oplog. ordering guarantee of events on the output channel as compared to the oplog
-	WorkerCount         int                // defaults to 1. number of go routines batch fetching concurrently
-	MaxWaitSecs         int                //
-	UpdateDataAsDelta   bool               // set to true to only receive delta information in the Data field on updates (info straight from oplog)
-	ChangeStreamNs      []string           // []string{"db.col1", "db.col2"}, MongoDB 3.6+ only; set to a slice to namespaces to read via MongoDB change streams
-	DirectReadNs        []string           // []string{"db.users"}, set to a slice of namespaces (collections or views) to read data directly from
-	DirectReadFilter    OpFilter           //
-	DirectReadSplitMax  int32              // the max number of times to split a collection for concurrent reads (impacts memory consumption)
-	DirectReadConcur    int                //
-	DirectReadNoTimeout bool               //
-	Unmarshal           DataUnmarshaller   //
-	Pipe                PipelineBuilder    // an optional function to build aggregation pipelines
-	PipeAllowDisk       bool               // true to allow MongoDB to use disk for aggregation pipeline options with large result sets
-	Log                 *log.Logger        // pass your own logger
-}
-
-type Op struct {
-	Id                interface{}            `json:"_id"`
-	Operation         string                 `json:"operation"`
-	Namespace         string                 `json:"namespace"`
-	Data              map[string]interface{} `json:"data,omitempty"`
-	Timestamp         primitive.Timestamp    `json:"timestamp"`
-	Source            QuerySource            `json:"source"`
-	Doc               interface{}            `json:"doc,omitempty"`
-	UpdateDescription map[string]interface{} `json:"updateDescription,omitempty`
-}
-
 type Optime struct {
 	Timestamp primitive.Timestamp "ts"
 }
@@ -133,76 +96,6 @@ type ChangeDocNs struct {
 	Collection string "coll"
 }
 
-type ChangeDoc struct {
-	DocKey            map[string]interface{} "documentKey"
-	Id                interface{}            "_id"
-	Operation         string                 "operationType"
-	FullDoc           map[string]interface{} "fullDocument"
-	Namespace         ChangeDocNs            "ns"
-	Timestamp         primitive.Timestamp    "clusterTime"
-	UpdateDescription map[string]interface{} "updateDescription"
-}
-
-func (cd *ChangeDoc) docId() interface{} {
-	return cd.DocKey["_id"]
-}
-
-func (cd *ChangeDoc) mapTimestamp() primitive.Timestamp {
-	if cd.Timestamp.T > 0 {
-		// only supported in version 4.0
-		return cd.Timestamp
-	} else {
-		// for versions prior to 4.0 simulate a timestamp
-		now := time.Now().UTC()
-		return primitive.Timestamp{
-			T: uint32(now.Unix()),
-			I: uint32(now.Nanosecond()),
-		}
-	}
-}
-
-func (cd *ChangeDoc) mapOperation() string {
-	if cd.Operation == "insert" {
-		return "i"
-	} else if cd.Operation == "update" || cd.Operation == "replace" {
-		return "u"
-	} else if cd.Operation == "delete" {
-		return "d"
-	} else if cd.Operation == "invalidate" || cd.Operation == "drop" || cd.Operation == "dropDatabase" {
-		return "c"
-	} else {
-		return ""
-	}
-}
-
-func (cd *ChangeDoc) hasUpdate() bool {
-	return cd.UpdateDescription != nil
-}
-
-func (cd *ChangeDoc) hasDoc() bool {
-	return (cd.mapOperation() == "i" || cd.mapOperation() == "u") && cd.FullDoc != nil
-}
-
-func (cd *ChangeDoc) isInvalidate() bool {
-	return cd.Operation == "invalidate"
-}
-
-func (cd *ChangeDoc) isDrop() bool {
-	return cd.Operation == "drop"
-}
-
-func (cd *ChangeDoc) isDropDatabase() bool {
-	return cd.Operation == "dropDatabase"
-}
-
-func (cd *ChangeDoc) mapNs() string {
-	if cd.Namespace.Collection != "" {
-		return cd.Namespace.Database + "." + cd.Namespace.Collection
-	} else {
-		return cd.Namespace.Database + ".cmd"
-	}
-}
-
 type Doc struct {
 	Id interface{} "_id"
 }
@@ -210,76 +103,6 @@ type Doc struct {
 type CollectionStats struct {
 	Count         int32 "count"
 	AvgObjectSize int32 "avgObjSize"
-}
-
-type CollectionSegment struct {
-	min         interface{}
-	max         interface{}
-	splitKey    string
-	splits      []map[string]interface{}
-	subSegments []*CollectionSegment
-}
-
-func (cs *CollectionSegment) shrinkTo(next interface{}) {
-	cs.max = next
-}
-
-func (cs *CollectionSegment) toSelector() bson.M {
-	sel, doc := bson.M{}, bson.M{}
-	if cs.min != nil {
-		doc["$gte"] = cs.min
-	}
-	if cs.max != nil {
-		doc["$lt"] = cs.max
-	}
-	if len(doc) > 0 {
-		sel[cs.splitKey] = doc
-	}
-	return sel
-}
-
-func (cs *CollectionSegment) divide() {
-	if len(cs.splits) == 0 {
-		return
-	}
-	ns := &CollectionSegment{
-		splitKey: cs.splitKey,
-		min:      cs.min,
-		max:      cs.max,
-	}
-	cs.subSegments = nil
-	for _, split := range cs.splits {
-		ns.shrinkTo(split[cs.splitKey])
-		cs.subSegments = append(cs.subSegments, ns)
-		ns = &CollectionSegment{
-			splitKey: cs.splitKey,
-			min:      ns.max,
-			max:      cs.max,
-		}
-	}
-	ns = &CollectionSegment{
-		splitKey: cs.splitKey,
-		min:      cs.splits[len(cs.splits)-1][cs.splitKey],
-	}
-	cs.subSegments = append(cs.subSegments, ns)
-}
-
-func (cs *CollectionSegment) init(c *mongo.Collection) (err error) {
-	opts := &options.FindOneOptions{}
-	opts.SetSort(bson.M{cs.splitKey: 1})
-	doc := make(map[string]interface{})
-	if err = c.FindOne(context.Background(), nil, opts).Decode(&doc); err != nil {
-		return
-	}
-	cs.min = doc[cs.splitKey]
-	opts = &options.FindOneOptions{}
-	opts.SetSort(bson.M{cs.splitKey: -1})
-	doc = make(map[string]interface{})
-	if err = c.FindOne(context.Background(), nil, opts).Decode(&doc); err != nil {
-		return
-	}
-	cs.max = doc[cs.splitKey]
-	return
 }
 
 type OpChan chan *Op
@@ -650,79 +473,6 @@ func ChainOpFilters(filters ...OpFilter) OpFilter {
 	}
 }
 
-func (this *Op) IsDrop() bool {
-	if _, drop := this.IsDropDatabase(); drop {
-		return true
-	}
-	if _, drop := this.IsDropCollection(); drop {
-		return true
-	}
-	return false
-}
-
-func (this *Op) IsDropCollection() (string, bool) {
-	if this.IsCommand() {
-		if this.Data != nil {
-			if val, ok := this.Data["drop"]; ok {
-				return val.(string), true
-			}
-		}
-	}
-	return "", false
-}
-
-func (this *Op) IsDropDatabase() (string, bool) {
-	if this.IsCommand() {
-		if this.Data != nil {
-			if _, ok := this.Data["dropDatabase"]; ok {
-				return this.GetDatabase(), true
-			}
-		}
-	}
-	return "", false
-}
-
-func (this *Op) IsCommand() bool {
-	return this.Operation == "c"
-}
-
-func (this *Op) IsInsert() bool {
-	return this.Operation == "i"
-}
-
-func (this *Op) IsUpdate() bool {
-	return this.Operation == "u"
-}
-
-func (this *Op) IsDelete() bool {
-	return this.Operation == "d"
-}
-
-func (this *Op) IsSourceOplog() bool {
-	return this.Source == OplogQuerySource
-}
-
-func (this *Op) IsSourceDirect() bool {
-	return this.Source == DirectQuerySource
-}
-
-func (this *Op) ParseNamespace() []string {
-	return strings.SplitN(this.Namespace, ".", 2)
-}
-
-func (this *Op) GetDatabase() string {
-	return this.ParseNamespace()[0]
-}
-
-func (this *Op) GetCollection() string {
-	if _, drop := this.IsDropDatabase(); drop {
-		return ""
-	} else if col, drop := this.IsDropCollection(); drop {
-		return col
-	} else {
-		return this.ParseNamespace()[1]
-	}
-}
 
 func (this *OpBuf) Append(op *Op) {
 	this.Entries = append(this.Entries, op)
@@ -795,20 +545,20 @@ func UpdateIsReplace(entry map[string]interface{}) bool {
 	}
 }
 
-func (this *Op) shouldParse() bool {
-	return this.IsInsert() || this.IsDelete() || this.IsUpdate() || this.IsCommand()
+func (my *Op) shouldParse() bool {
+	return my.IsInsert() || my.IsDelete() || my.IsUpdate() || my.IsCommand()
 }
 
-func (this *Op) matchesNsFilter(o *Options) bool {
-	return o.NamespaceFilter == nil || o.NamespaceFilter(this)
+func (my *Op) matchesNsFilter(o *Options) bool {
+	return o.NamespaceFilter == nil || o.NamespaceFilter(my)
 }
 
-func (this *Op) matchesFilter(o *Options) bool {
-	return o.Filter == nil || o.Filter(this)
+func (my *Op) matchesFilter(o *Options) bool {
+	return o.Filter == nil || o.Filter(my)
 }
 
-func (this *Op) matchesDirectFilter(o *Options) bool {
-	return o.DirectReadFilter == nil || o.DirectReadFilter(this)
+func (my *Op) matchesDirectFilter(o *Options) bool {
+	return o.DirectReadFilter == nil || o.DirectReadFilter(my)
 }
 
 func normalizeDocSlice(a []interface{}) []interface{} {
@@ -855,26 +605,26 @@ func normalizeDocMap(m map[string]interface{}) map[string]interface{} {
 	return o
 }
 
-func (this *Op) processData(data interface{}, o *Options) {
+func (my *Op) processData(data interface{}, o *Options) {
 	if data != nil {
-		this.Doc = data
+		my.Doc = data
 		if m, ok := data.(map[string]interface{}); ok {
-			this.Data = normalizeDocMap(m)
-			this.Doc = this.Data
+			my.Data = normalizeDocMap(m)
+			my.Doc = my.Data
 		}
 		if o.Unmarshal != nil {
-			this.processDoc(data, o)
+			my.processDoc(data, o)
 		}
 	}
 }
 
-func (this *Op) processDoc(data interface{}, o *Options) {
+func (my *Op) processDoc(data interface{}, o *Options) {
 	if o.Unmarshal == nil || data == nil {
 		return
 	}
 	b, err := bson.Marshal(data)
 	if err == nil {
-		this.Doc, err = o.Unmarshal(this.Namespace, b)
+		my.Doc, err = o.Unmarshal(my.Namespace, b)
 		if err != nil {
 			o.Log.Printf("Unable to process document: %s", err)
 		}
@@ -884,35 +634,35 @@ func (this *Op) processDoc(data interface{}, o *Options) {
 	return
 }
 
-func (this *Op) ParseLogEntry(entry *OpLog, o *Options) (include bool, err error) {
+func (my *Op) ParseLogEntry(entry *OpLog, o *Options) (include bool, err error) {
 	var rawField map[string]interface{}
-	this.Operation = entry.Operation
-	this.Timestamp = entry.Timestamp
-	this.Namespace = entry.Namespace
-	if this.shouldParse() {
-		if this.IsCommand() {
+	my.Operation = entry.Operation
+	my.Timestamp = entry.Timestamp
+	my.Namespace = entry.Namespace
+	if my.shouldParse() {
+		if my.IsCommand() {
 			rawField = entry.Doc
-			this.processData(rawField, o)
+			my.processData(rawField, o)
 		}
-		if this.matchesNsFilter(o) {
-			if this.IsInsert() || this.IsDelete() || this.IsUpdate() {
-				if this.IsUpdate() {
+		if my.matchesNsFilter(o) {
+			if my.IsInsert() || my.IsDelete() || my.IsUpdate() {
+				if my.IsUpdate() {
 					rawField = entry.Update
 				} else {
 					rawField = entry.Doc
 				}
-				this.Id = rawField["_id"]
-				if this.IsInsert() {
-					this.processData(rawField, o)
-				} else if this.IsUpdate() {
+				my.Id = rawField["_id"]
+				if my.IsInsert() {
+					my.processData(rawField, o)
+				} else if my.IsUpdate() {
 					rawField = entry.Doc
 					if o.UpdateDataAsDelta || UpdateIsReplace(rawField) {
-						this.processData(rawField, o)
+						my.processData(rawField, o)
 					}
 				}
 				include = true
-			} else if this.IsCommand() {
-				include = this.IsDrop()
+			} else if my.IsCommand() {
+				include = my.IsDrop()
 			}
 		}
 	}

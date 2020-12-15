@@ -1,11 +1,11 @@
-package mgo_driver
+package mop
 
 import (
 	"errors"
 	"fmt"
 
 	"github.com/BurntSushi/toml"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type ConfigOptions struct {
@@ -63,8 +63,8 @@ func ConsistentHashFilter(name string, workers []string) (OpFilter, error) {
 		if op.Id != nil {
 			var idStr string
 			switch op.Id.(type) {
-			case bson.ObjectId:
-				idStr = op.Id.(bson.ObjectId).Hex()
+			case primitive.ObjectID:
+				idStr = op.Id.(primitive.ObjectID).Hex()
 			default:
 				idStr = fmt.Sprintf("%v", op.Id)
 			}

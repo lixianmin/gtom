@@ -1,4 +1,4 @@
-package mgo_driver
+package mop
 
 import (
 	"crypto/md5"
